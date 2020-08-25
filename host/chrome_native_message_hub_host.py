@@ -1,4 +1,5 @@
 #! /usr/bin/python3
+import os
 import sys
 import asyncio
 from asyncio import events
@@ -10,11 +11,18 @@ import functools
 
 MAX_MESSAGE_LEN = 1024 * 64
 
-logging.basicConfig(
-        handlers=[logging.handlers.SysLogHandler(address='/dev/log', facility='local1')],
-        level=logging.DEBUG)
-
-clients = {}
+def setup_syslog():
+    sysname = os.uname().sysname
+    if sysname == 'Darwin':
+        address = '/var/run/syslog'
+    elif sysname == 'Linux':
+        address = '/dev/log'
+    else:
+        raise OSNotSupportedError('{} is not supported'.format(sysname))
+    logging.basicConfig(
+            handlers=[logging.handlers.SysLogHandler(address=address, facility='local1')],
+            level=logging.DEBUG)
+setup_syslog()
 
 class Client(object):
     def __init__(self, reader, writer):
@@ -112,7 +120,7 @@ def write_a_message(writer, json_obj):
     writer.write(struct.pack('=I', msg_l))
     writer.write(data)
 
-async def handle_client(reader, writer, stdout_writer):
+async def handle_client(reader, writer, stdout_writer, clients):
     addr = writer.get_extra_info('peername')
     logging.info('client %s connected.', addr)
     client = Client(reader, writer)
@@ -134,6 +142,7 @@ async def handle_client(reader, writer, stdout_writer):
             key = register['extensionId']
             if key in clients:
                 logging.warning('replacing register %s with %s', key, addr)
+                clients[key].writer.close()
             clients[key] = client
         while True:
             j = await read_a_messagae(reader)
@@ -148,8 +157,8 @@ async def handle_client(reader, writer, stdout_writer):
                 continue
             write_a_message(stdout_writer, j)
             await stdout_writer.drain()
-    except ConnectionError:
-        logging.warning('connection error in %s', addr)
+    except ConnectionError as ce:
+        logging.warning('connection error in %s: %s', addr, str(ce))
         return
     except asyncio.IncompleteReadError:
         return
@@ -168,51 +177,58 @@ async def handle_client(reader, writer, stdout_writer):
                 if clients[key] == client:
                     del clients[key]
         writer.close()
-        await writer.wait_closed()
-
-async def handle_stdin(stdin_reader):
-    while True:
         try:
+            await writer.wait_closed()
+        except:
+            pass
+
+async def handle_stdin(stdin_reader, server, clients):
+    try:
+        while True:
             data = await stdin_reader.readexactly(4)
             msg_l = struct.unpack('=I', data)[0]
             logging.debug('message length from chrome: %d', msg_l)
-        except asyncio.IncompleteReadError as incomplete_err:
-            logging.warning('incomplete message length from chrome:%s',
-                            incomplete_err.partial.hex())
-            return
-        try:
             data = await stdin_reader.readexactly(msg_l)
-            msg = data.decode()
-            logging.debug('message from chrome:%s', msg)
-            j = json.loads(msg)
-        except asyncio.IncompleteReadError as incomplete_err:
-            logging.warning('incomplete message from chrome:%s', incomplete_err.partial.decode())
-            continue
-        except UnicodeError:
-            logging.error('failed to decode message from chrome:%s', data.hex())
-            continue
-        except json.JSONDecodeError:
-            logging.error('failed to parse json message:%s', msg)
-            continue
+            try:
+                msg = data.decode()
+                logging.debug('message from chrome:%s', msg)
+                j = json.loads(msg)
+            except UnicodeError:
+                logging.error('failed to decode message from chrome:%s', data.hex())
+                continue
+            except json.JSONDecodeError:
+                logging.error('failed to parse json message:%s', msg)
+                continue
 
-        if not 'extensionId' in j:
-            logging.warning('no extensionId in json from chrome')
-            continue
-        # if not 'hostId' in j:
-            # logging.warning('no hostId in json from chrome')
-            # continue
-        if not 'message' in j:
-            logging.warning('no message in json from chrome')
-            continue
-        # find the client, send message
-        # key = '-'.join((j['extensionId'], j['hostId']))
-        key = j['extensionId']
-        if not key in clients:
-            logging.warning('no client registered for %s', key)
-            continue
-        client = clients[key]
-        write_a_message(client.writer, j['message'])
-        await client.writer.drain()
+            if not 'extensionId' in j:
+                logging.warning('no extensionId in json from chrome')
+                continue
+            # if not 'hostId' in j:
+                # logging.warning('no hostId in json from chrome')
+                # continue
+            if not 'message' in j:
+                logging.warning('no message in json from chrome')
+                continue
+            # find the client, send message
+            # key = '-'.join((j['extensionId'], j['hostId']))
+            key = j['extensionId']
+            if not key in clients:
+                logging.debug('no client registered for %s', key)
+                continue
+            client = clients[key]
+            write_a_message(client.writer, j['message'])
+            await client.writer.drain()
+    except asyncio.IncompleteReadError as incomplete_err:
+        # EOF read
+        logging.info('EOF from chrome, shutdown')
+        server.close()
+        # shutdown and close all connections
+        aws = set()
+        for key in list(clients):
+            client = clients[key]
+            client.writer.close()
+            aws.add(client.writer.wait_closed())
+        asyncio.wait(aws)
 
 async def main():
     '''
@@ -225,13 +241,14 @@ async def main():
     wt, wp = await loop.connect_write_pipe(lambda: FlowControlMixin(loop=loop), sys.stdout)
     stdout_writer = asyncio.StreamWriter(wt, wp, None, loop)
 
+    clients={}
     server = await asyncio.start_server(
-        functools.partial(handle_client, stdout_writer=stdout_writer),
+        functools.partial(handle_client, stdout_writer=stdout_writer, clients=clients),
         '127.0.0.1',
         31888)
 
     async with server:
-        await asyncio.wait({server.serve_forever(), handle_stdin(stdin_reader)})
+        await asyncio.wait({server.serve_forever(), handle_stdin(stdin_reader, server, clients)})
 
 if __name__ == "__main__":
     sys.exit(asyncio.run(main()))

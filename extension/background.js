@@ -13,12 +13,10 @@
         var extensionId = port.sender.id;
         extensions[extensionId] = port;
         port.onMessage.addListener(function (message) {
-            if (message.type == 'message') {
-                native_message_port.postMessage({
-                    extensionId: extensionId,
-                    message: message.message
-                });
-            }
+            native_message_port.postMessage({
+                extensionId: extensionId,
+                message: message
+            });
         });
         port.onDisconnect.addListener(function () {
             delete extensions[extensionId];
