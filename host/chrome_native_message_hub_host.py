@@ -11,6 +11,9 @@ import functools
 
 MAX_MESSAGE_LEN = 1024 * 64
 
+class OSNotSupportedError(Exception):
+    pass
+
 def setup_syslog():
     sysname = os.uname().sysname
     if sysname == 'Darwin':
@@ -104,20 +107,20 @@ class InvalidMessageHeaderError(Exception):
 def send_err(writer, code, msg):
     writer.write(f'{{"code": {code}, "error": "{msg}"}}'.encode())
 
-async def read_a_messagae(reader):
+async def read_a_messagae(reader, byte_order):
     data = await reader.readexactly(4)
-    msg_l = struct.unpack('!I', data)[0]
+    msg_l = struct.unpack(byte_order + 'I', data)[0]
     if msg_l > MAX_MESSAGE_LEN:
-        raise InvalidMessageHeaderError
+        raise InvalidMessageHeaderError(msg_l)
     data = await reader.readexactly(msg_l)
     return json.loads(data.decode())
 
-def write_a_message(writer, json_obj):
+def write_a_message(writer, json_obj, byte_order):
     data = json.dumps(json_obj).encode()
     msg_l = len(data)
     if msg_l > MAX_MESSAGE_LEN:
         logging.warning('writing a message exceed max: %d', msg_l)
-    writer.write(struct.pack('=I', msg_l))
+    writer.write(struct.pack(byte_order + 'I', msg_l))
     writer.write(data)
 
 async def handle_client(reader, writer, stdout_writer, clients):
@@ -127,7 +130,7 @@ async def handle_client(reader, writer, stdout_writer, clients):
 
     try:
         # first msg should register extensionId/hostId pair
-        j= await read_a_messagae(reader)
+        j= await read_a_messagae(reader, '!')
         if not 'registers' in j:
             send_err(writer, 4, 'first message should register a list of extensionId/hostId pairs')
             return
@@ -145,7 +148,7 @@ async def handle_client(reader, writer, stdout_writer, clients):
                 clients[key].writer.close()
             clients[key] = client
         while True:
-            j = await read_a_messagae(reader)
+            j = await read_a_messagae(reader, '!')
             if not 'extensionId' in j:
                 send_err(writer, 5, 'no extensionId in json')
                 continue
@@ -155,7 +158,7 @@ async def handle_client(reader, writer, stdout_writer, clients):
             if not 'message' in j:
                 send_err(writer, 7, 'no message in json')
                 continue
-            write_a_message(stdout_writer, j)
+            write_a_message(stdout_writer, j, '=')
             await stdout_writer.drain()
     except ConnectionError as ce:
         logging.warning('connection error in %s: %s', addr, str(ce))
@@ -185,19 +188,13 @@ async def handle_client(reader, writer, stdout_writer, clients):
 async def handle_stdin(stdin_reader, server, clients):
     try:
         while True:
-            data = await stdin_reader.readexactly(4)
-            msg_l = struct.unpack('=I', data)[0]
-            logging.debug('message length from chrome: %d', msg_l)
-            data = await stdin_reader.readexactly(msg_l)
             try:
-                msg = data.decode()
-                logging.debug('message from chrome:%s', msg)
-                j = json.loads(msg)
-            except UnicodeError:
-                logging.error('failed to decode message from chrome:%s', data.hex())
+                j= await read_a_messagae(stdin_reader, '=')
+            except UnicodeError as ue:
+                logging.error('failed to decode message from chrome:%s', ue)
                 continue
-            except json.JSONDecodeError:
-                logging.error('failed to parse json message:%s', msg)
+            except json.JSONDecodeError as jde:
+                logging.error('failed to parse json message:%s', jde)
                 continue
 
             if not 'extensionId' in j:
@@ -216,11 +213,11 @@ async def handle_stdin(stdin_reader, server, clients):
                 logging.debug('no client registered for %s', key)
                 continue
             client = clients[key]
-            write_a_message(client.writer, j['message'])
+            write_a_message(client.writer, j['message'], '!')
             await client.writer.drain()
-    except asyncio.IncompleteReadError as incomplete_err:
+    except asyncio.IncompleteReadError:
         # EOF read
-        logging.info('EOF from chrome, shutdown')
+        logging.warning('EOF from chrome, shutdown')
         server.close()
         # shutdown and close all connections
         aws = set()
@@ -228,7 +225,8 @@ async def handle_stdin(stdin_reader, server, clients):
             client = clients[key]
             client.writer.close()
             aws.add(client.writer.wait_closed())
-        asyncio.wait(aws)
+        if len(aws) > 0:
+            await asyncio.wait(aws)
 
 async def main():
     '''
