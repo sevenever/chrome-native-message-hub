@@ -1,0 +1,9 @@
+{
+    "name": "com.sevenever.chrome_native_message_hub",
+    "description":"A hub to send/receive message to/from chrome extension",
+    "path": "/home/seven/github/sevenever/chrome-native-message-hub/host/chrome_native_message_hub_host.py",
+    "type": "stdio",
+    "allowed_origins" : [
+        "chrome-extension://ocheknboecjcmomfoognpkjngogliafg/"
+    ]
+}
