@@ -135,11 +135,11 @@ async def handle_client(reader, writer, stdout_writer, clients):
             if not 'extensionId' in register:
                 send_err(writer, 8, 'invalid register: no extensionId')
                 return
-            # if not 'hostId' in register:
-                # send_err(writer, 8, 'invalid register: no hostId')
-                # return
-            # key = '-'.join((register['extensionId'], register['hostId']))
-            key = register['extensionId']
+            if not 'hostId' in register:
+                send_err(writer, 8, 'invalid register: no hostId')
+                return
+            key = '-'.join((register['extensionId'], register['hostId']))
+            # key = register['extensionId']
             if key in clients:
                 logging.warning('replacing register %s with %s', key, addr)
                 clients[key].writer.close()
@@ -149,9 +149,9 @@ async def handle_client(reader, writer, stdout_writer, clients):
             if not 'extensionId' in j:
                 send_err(writer, 5, 'no extensionId in json')
                 continue
-            # if not 'hostId' in j:
-                # send_err(writer, 6, 'no hostId in json')
-                # continue
+            if not 'hostId' in j:
+                send_err(writer, 6, 'no hostId in json')
+                continue
             if not 'message' in j:
                 send_err(writer, 7, 'no message in json')
                 continue
@@ -203,15 +203,15 @@ async def handle_stdin(stdin_reader, server, clients):
             if not 'extensionId' in j:
                 logging.warning('no extensionId in json from chrome')
                 continue
-            # if not 'hostId' in j:
-                # logging.warning('no hostId in json from chrome')
-                # continue
+            if not 'hostId' in j:
+                logging.warning('no hostId in json from chrome')
+                continue
             if not 'message' in j:
                 logging.warning('no message in json from chrome')
                 continue
             # find the client, send message
-            # key = '-'.join((j['extensionId'], j['hostId']))
-            key = j['extensionId']
+            key = '-'.join((j['extensionId'], j['hostId']))
+            # key = j['extensionId']
             if not key in clients:
                 logging.debug('no client registered for %s', key)
                 continue
