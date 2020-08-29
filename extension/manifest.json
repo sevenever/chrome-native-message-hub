@@ -5,6 +5,9 @@
     "background": {
         "scripts": [ "background.js" ]
     },
+    "icons": {
+        "128": "hub.png"
+    },
     "manifest_version": 2,
     "applications": {
         "gecko": {
