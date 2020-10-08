@@ -4,6 +4,6 @@
     "path": "/home/seven/github/sevenever/chrome-native-message-hub/host/chrome_native_message_hub_host.py",
     "type": "stdio",
     "allowed_origins" : [
-        "chrome-extension://lgbnalflfndfhedoedafafahdnccaeid/"
+        "chrome-extension://ekklkgmocbobcblcgmgaemojomkmhegp/"
     ]
 }
